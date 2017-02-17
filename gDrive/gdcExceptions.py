@@ -22,5 +22,7 @@ class NoDriveService(gdcException):
         super().__init__("Drive service failed to initialize.")
 
 class NotCleanSlateError(gdcException):
-    def __init__(self, path):
-        super().__init__("Drive folder is not empty.")
+    def __init__(self, msg=None):
+        if not msg:
+            msg = "Drive folder is not empty."
+        super().__init__(msg)

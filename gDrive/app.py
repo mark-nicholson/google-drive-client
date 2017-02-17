@@ -2,13 +2,14 @@
 import sys
 import os
 import json
-import datetime
+from datetime import datetime
 
 from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
 
-from gDrive import gdcUtils
-from gDrive import gdcExceptions
+import gDrive
+from gDrive.gdcExceptions import *
+import gDrive.gMetadata as gmd
 
 
 class gDriveApp(object):
@@ -17,25 +18,54 @@ class gDriveApp(object):
     GDC_FOLDER = '.gdc'
     GDC_CREDENTIALS_FILE = 'credentials.json'
     GDC_CONFIG_FILE = 'config'
+    GDC_APP_INFO_DIR = 'app-info'
+    GDC_CLIENT_SECRET_FNAME = 'client_secret.json'
+    GDC_DEFAULT_CONFIG = {
+        'credentials': GDC_CREDENTIALS_FILE,
+        'drive-folder': ['root', 'xxxIDxxx'],
+        'subfolders': [
+        ],
+        'creation': gmd.time_epoch(md=True),
+        'last-sync': gmd.time_epoch(md=True)
+    }
 
 
-    def __init__(self):
-        self._root_dir = None
+    def __init__(self, root_dir=None):
+        print("gDriveApp.__init__()")
+        # locals
+        self._config = None
+        self._root_dir = root_dir
+
+        # cloud
         self._root = None
         self._about = None
-        self._config = None
-
-        import gDrive
-        self._install_base = gDrive.__file__.rsplit(os.path.sep, 1)[0]
-
-        self._authenticate()
 
     def root_dir(self):
-        if not self._root_dir:
-            from gDrive.gdcUtils import locate_root_dir
-            self._root_dir = locate_root_dir()
-        return self._root_dir
+        if self._root_dir:
+            return self._root_dir
 
+        # snoop ...
+        cwd = os.path.abspath(os.path.curdir)
+        while cwd != os.path.sep:
+            print("CWD:" + cwd)
+            tdir = os.path.join(cwd, gDriveApp.GDC_FOLDER)
+            if os.path.isdir(tdir) \
+                and \
+                os.path.exists(os.path.join(tdir, gDriveApp.GDC_CREDENTIALS_FILE)):
+                if self:
+                    self._root_dir = cwd
+                return cwd
+
+            # iterate
+            cwd = os.path.dirname(cwd)
+
+        # bad news ...
+        raise NoRootDir(os.path.abspath(os.path.curdir))
+
+    def gdc_dir(self):
+        return os.path.join(self.root_dir(), gDriveApp.GDC_FOLDER)
+
+    
     def about(self):
         if not self._about:
             self._about = self.drive.GetAbout()
@@ -45,32 +75,60 @@ class gDriveApp(object):
         if not self._root:
             about = self.about()
             sf = self.drive.auth.service.files()
-            r_md = sf.get(fileId=about['rootFolderId']).execute(http=drive.http)
-            self._root = drive.CreateFile(metadata=r_md)
-            return self._root
+            r_md = sf.get(fileId=about['rootFolderId']).execute(http=self.drive.http)
+            self._root = self.drive.CreateFile(metadata=r_md)
+        return self._root
 
-    def get_config_file(self):
-        rdir = self.root_dir()
-        return os.path.join(rdir, self.GDC_FOLDER, self.GDC_CONFIG_FILE)
+    def gfile_by_id(self, gid):
+        sf = self.drive.auth.service.files()
+        r_md = sf.get(fileId=gid).execute(http=self.drive.http)
+        return self.drive.CreateFile(metadata=r_md)
 
-    def get_credentials_file(self):
-        rdir = self.root_dir()
-        return os.path.join(rdir, self.GDC_FOLDER, self.GDC_CREDENTIALS_FILE)
+    def get_config_filepath(self):
+        return os.path.join(
+            self.root_dir(),
+            gDriveApp.GDC_FOLDER,
+            gDriveApp.GDC_CONFIG_FILE)
+
+    def get_credentials_filepath(self):
+        return os.path.join(
+            self.root_dir(),
+            gDriveApp.GDC_FOLDER,
+            gDriveApp.GDC_CREDENTIALS_FILE)
 
     def config(self):
         if not self._config:
-            cfile = self.get_config_file()
-            
-            fp = open(cfile)
+            fp = open(self.get_config_filepath())
             self._config = json.load(fp)
             fp.close()
             
         return self._config
 
-    def install_base(self):
-        return self._install_base
+    def store_config_file(self, cfg=None):
+        if cfg is None:
+            cfg = self._config
+
+        # bread crumbs
+        cfg['last-update'] = datetime.isoformat(datetime.now())
+
+        # write it out
+        fp = open(self.get_config_filepath(), "w+")
+        json.dump(cfg, fp)
+        fp.close()
     
-    def _authenticate(self, cfg=None, user_authenticate=False):
+    
+    @staticmethod
+    def install_base():
+        return gDrive.__file__.rsplit(os.path.sep, 1)[0]
+
+    def client_secret_filepath(self):
+        return os.path.join(
+            gDriveApp.install_base(),
+            gDriveApp.GDC_APP_INFO_DIR,
+            gDriveApp.GDC_CLIENT_SECRET_FNAME)
+    
+    def _authenticate(self, user_authenticate=False):
+        print("app._authenticate()")
 
         # load the config file
         cfg = self.config()
@@ -78,24 +136,25 @@ class gDriveApp(object):
         # base authentication unit
         gauth = GoogleAuth()
 
-        ccf = os.path.join(self.install_base(), 'app-info', 'client_secret.json')
+        # lookup the client secret file
+        ccf = self.client_secret_filepath()
         
         # setup the settings
         gauth.settings['client_config_backend'] = 'file' 
         gauth.settings['client_config_file'] = ccf
         gauth.settings['save_credentials'] = True
         gauth.settings['save_credentials_backend'] = 'file' 
-        credFile = self.get_credentials_file()
+        credFile = self.get_credentials_filepath()
         gauth.settings['save_credentials_file'] = credFile 
 
         # load the creds
         gauth.LoadCredentialsFile(credFile)
-        print("Creds: " + gauth.settings['save_credentials_file'])
+        #print("Creds: " + gauth.settings['save_credentials_file'])
         
         # manually collect credentials
         if not gauth.credentials or gauth.credentials.invalid:
             if not user_authenticate:
-                raise gdcExceptions.NoCredentialsError()
+                raise NoCredentialsError()
             else:
                 print("")
                 print("Make sure you log in as the USER you wish to be.")
@@ -109,6 +168,11 @@ class gDriveApp(object):
         if not drive or drive is None:
             raise NoDriveService()
 
-        # done
+        # remember
         self.gauth = gauth
         self.drive = drive
+
+        # kick start the data-stream. Not sure why this is needed, but
+        # if I try to fetch a file's metadata first, it chokes like the
+        # service is not built.
+        about = self.about()

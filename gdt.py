@@ -4,30 +4,37 @@
 #
 
 import sys
+import os
 import argparse
 
 from gDrive.gdcExceptions import *
 
+#
+# Default parser along with common options
+#
 parser = argparse.ArgumentParser(prog="gdt")
-parser.add_argument('-n', '--dry-run', action='store_true', help='simulate what would happen')
+parser.add_argument('-n', '--dry-run',
+                        action='store_true', help='simulate what would happen')
 subparsers = parser.add_subparsers(help='sub-command help')
 
-from gDrive.create import add_subparser as subparser_create
-subparser_create(subparsers)
+#
+#  Collect the subcommands
+#
+from gDrive.create import gDriveCreate
+gDriveCreate.add_subparser(subparsers)
 
-from gDrive.pull import add_subparser as subparser_pull
-subparser_pull(subparsers)
+from gDrive.pull import gDrivePull
+gDrivePull.add_subparser(subparsers)
 
-parser_update = subparsers.add_parser('update', help='update a new gDrive map')
-parser_update.add_argument('--force', help='clobber anything incorrect locally')
-
-parser_sync = subparsers.add_parser('sync', help='sync gDrive')
-parser_sync.add_argument('--force', help='clobber anything incorrect locally')
+from gDrive.update import gDriveUpdate
+gDriveUpdate.add_subparser(subparsers)
 
 
 flags = parser.parse_args()
 
 print(flags)
+
+#exit(0)
 
 # global catcher. Format exceptions consistently.
 debug = False
@@ -36,18 +43,15 @@ if debug:
     flags.func(flags)
 else:
     try:
-        flags.func(flags)
+        app = flags.object(flags)
+        flags.func(app)
     except gdcSuccess as e:
         print("Success!")
     except gdcException as e:
         print("Error: " + str(e))
     except:
         print("Failed to complete")
-
-        # original
-        #e = sys.exc_info()[0]
-        #print(e)
-
+        print("")
         #debug
         import traceback
         print('-'*60)

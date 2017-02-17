@@ -4,20 +4,46 @@
 
 import sys
 import os
+import json
 
-from gDrive import gdcUtils
+from contextlib import ContextDecorator
 
+from gDrive.app import gDriveApp
 from gDrive.gdcExceptions import *
+from gDrive import gMetadata as gmd
+
+
+class FolderContext(ContextDecorator):
+    def __init__(self, folder, basepath=None):
+        self.folder = folder
+        self.path = item['title']
+        if basepath is not None:
+            self.path = os.path.join(basepath, item['title'])
+
+        self.revpath = ''
+        for p in self.path.split(os.path.sep):
+            self.revpath = os.path.join(self.revpath, '..')
+        
+    def __enter__(self):
+        os.chdir(self.path)
+
+    def __exit__(self):
+        os.chdir(self.revpath)
+
+
 
 class GdcEntity(object):
     """A generic file."""
-    def __init__(self, gfile):
-        self.gfile = gfile
+    def __init__(self, gFile, localPath):
+        self.gFile = gFile
+
+        # full path to the item
+        self.localPath = localPath
 
     def pull(self, app):
-        name = self.gfile['title']
-        modDate = self.gfile['modifiedDate']
-        modDate_ms = gdcUtils.time_ms_from_epoch(modDate)
+        name = self.localPath
+        modDate = self.gFile['modifiedDate']
+        modDate_ms = gmd.time_ms_from_epoch(modDate)
         
         # configure the attributes - LINUX
         atime_ns = modDate_ms * 1000 * 1000
@@ -31,78 +57,146 @@ class GdcEntity(object):
     def sync(self):
         pass
 
+    def load_local_config(self):
+        gdcDir = os.path.join(self.localPath, gDriveApp.GDC_FOLDER)
+        if not os.path.isdir(gdcDir):
+            return {}
+        confFile = os.path.join(gdcDir, gDriveApp.GDC_CONFIG_FILE)
+        if not os.path.exists(confFile):
+            return {}
+        fp = open(confFile)
+        lconfig = json.load(fp)
+        fp.close()
+        return lconfig
+
 class GdcFolder(GdcEntity):
     """Folder Construct"""
-    def __init__(self, gfile):
-        super().__init__(gfile)
+    def __init__(self, gFile, local_path):
+        super().__init__(gFile, local_path)
+        print("FOLDER: %s # %s" % (local_path, gFile['title']))
 
     def pull(self, app):
         print("Folder:PULL")
 
-        dir_name = self.gfile['title']
-
-        # pre-check
-        if os.path.exists(dir_name) or os.path.isdir(dir_name):
-            raise NotCleanSlateError(dir_name)
-
-        # build the new directory
-        os.mkdir(dir_name)
+        #
+        # manage the current directory
+        #
 
         # common configs
         super().pull(app)
 
-        # dig?
-        if app._flags.no_recurse:
-            return
+        # read an parse local directory config, if any
+        cfg = self.load_local_config()
+        
+        # collect info of all drive sub-entities...
+        query = { 'q': "'%s' in parents and trashed=false" % self.gFile['id'] }
+        entity_list = app.drive.ListFile(query).GetList()
 
-        # recurse..
-        os.chdir(dir_name)
+        work_list = []
+        folder_list = []
+        file_list = []
+        
+        # separate the folders and files
+        for entity in entity_list:
+            if entity['mimeType'] == "application/vnd.google-apps.folder":
+                folder_list.append(entity)
+            else:
+                file_list.append(entity)
 
-        # get the next level files...
-        query = {'q': "'%s' in parents and trashed=false" % self.gfile['id']}
-        file_list = app.drive.ListFile(query).GetList()
-        print("List: %d" % len(file_list))
 
-        # process them
+        if 'subfolders' in cfg:
+            # filter to the selection of subfolders
+            for f in folder_list:
+                for (name,gid) in cfg['subfolders']:
+                    if f['title'] == name:
+                        worklist.append(f)
+        else:
+            # grab everything
+            work_list += folder_list
+
+        if 'subfiles' in cfg:
+            # filter to the selection of subfiles
+            for f in file_list:
+                for (name,gid) in cfg['subfiles']:
+                    if f['title'] == name:
+                        worklist.append(f)
+        else:
+            # grab everything
+            work_list += file_list
+
+        # debug
+        print("List: %d" % len(work_list))
+            
+
+
+        # handle the files
         for item in file_list:
-            print('id: %s, par: %s, title: %s' %
-                      (item['id'][-8:], self.gfile['id'][-8:], item['title']))
 
-            #import pprint
-            #pp = pprint.PrettyPrinter(indent=4)
-            #pp.pprint(item)
-
-            from gDrive import gdcAction
+            print('FILE: id: %s, par: %s, title: %s' %
+                      (item['id'][-8:], 'root', item['title']))
 
             # identify
-            action_builder = gdcAction.find_action(item)
+            action_builder = find_action(item)
 
             # cook it up
-            action = action_builder(item)
+            itemPath = os.path.join(self.localPath, item['title'])
+            action = action_builder(item, itemPath)
             
-            # process it
+            # process it, and begin the recursion
+            action.pull(self)
+
+
+        # recurse
+        for item in folder_list:
+
+            print('FOLDER: id: %s, par: %s, title: %s' %
+                      (item['id'][-8:], 'root', item['title']))
+
+            # pre-check
+            dir_name = os.path.join(self.localPath, item['title'])
+            if os.path.exists(dir_name) or os.path.isdir(dir_name):
+                raise NotCleanSlateError(dir_name)
+
+            # build the new directory
+            os.mkdir(dir_name)
+
+            # dig?
+            if app._flags.no_recurse:
+                return
+
+            # recurse..
+            #os.chdir(dir_name)
+
+
+            
+            # identify
+            action_builder = find_action(item)
+
+            # cook it up
+            itemPath = os.path.join(self.localPath, item['title'])
+            action = action_builder(item, itemPath)
+            
+            # process it, and begin the recursion
             action.pull(app)
 
-        # recurse..
-        os.chdir('..')
+            # recurse..
+            #os.chdir('..')
 
 
 class GdcSimple(GdcEntity):
     """Basic File"""
-    def __init__(self, gfile):
-        super().__init__(gfile)
+    def __init__(self, gFile, localPath):
+        super().__init__(gFile, localPath)
 
     def pull(self, app):
         print("Simple:PULL")
 
-        name = self.gfile['title']
-
         # pre-check
-        if os.path.exists(name) or os.path.isfile(name):
-            raise NotCleanSlateError(name)
+        if os.path.exists(self.localPath) or os.path.isfile(self.localPath):
+            raise NotCleanSlateError(self.localPath)
 
         # download the contents
-        self.gfile.GetContentFile(name)
+        self.gFile.GetContentFile(self.localPath)
 
         # update the file attribs
         super().pull(app)
@@ -116,22 +210,20 @@ class GdcSimple(GdcEntity):
 
 class GdcGoogleApp(GdcEntity):
     """GoogleApp Construct"""
-    def __init__(self, gfile):
-        super().__init__(gfile)
+    def __init__(self, gFile, localPath):
+        super().__init__(gFile, localPath)
 
     def pull(self, app):
         print("GoogleApp:PULL")
-
-        name = self.gfile['title']
         
         # pre-check
-        if os.path.exists(name) or os.path.isfile(name):
-            raise NotCleanSlateError(name)
+        if os.path.exists(self.localPath) or os.path.isfile(self.localPath):
+            raise NotCleanSlateError(self.localPath)
 
-        print("    Skipping " + name)
+        print("    Skipping " + self.localPath)
 
         # download the contents
-        #self.gfile.GetContentFile(name)
+        #self.gFile.GetContentFile(self.localPath)
 
         # update the file attribs
         #super.pull(app)
