@@ -41,12 +41,6 @@ class gDrivePull(gDriveApp):
         # get the config
         cfg = self.config()
 
-        # locate the root
-        print("RootDIR: " + self.root_dir())
-
-        # make it the working dir
-        #os.chdir(self.root_dir())
-
         # gRoot is the gFile which maps to the base folder in GoogleDrive
         #  and is *NOT* necessarily 'My Drive', ie. true google-drive-root
         gRoot = self.gfile_by_id(cfg['drive-folder'][1])
@@ -55,10 +49,10 @@ class gDrivePull(gDriveApp):
         action_builder = gdcAction.find_action(gRoot)
 
         # cook it up
-        action = action_builder(gRoot, self.root_dir())
+        action = action_builder(self, gRoot, self.root_dir())
             
         # process it, and begin the recursion
-        action.pull(self)
+        action.pull()
 
         # done
         raise gdcExceptions.gdcSuccess()

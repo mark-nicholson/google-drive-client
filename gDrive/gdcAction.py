@@ -5,6 +5,7 @@
 import sys
 import os
 import json
+import platform
 
 from contextlib import ContextDecorator
 
@@ -34,13 +35,14 @@ class FolderContext(ContextDecorator):
 
 class GdcEntity(object):
     """A generic file."""
-    def __init__(self, gFile, localPath):
+    def __init__(self, app, gFile, localPath):
+        self.app = app
         self.gFile = gFile
 
         # full path to the item
         self.localPath = localPath
 
-    def pull(self, app):
+    def pull(self):
         name = self.localPath
         modDate = self.gFile['modifiedDate']
         modDate_ms = gmd.time_ms_from_epoch(modDate)
@@ -71,11 +73,14 @@ class GdcEntity(object):
 
 class GdcFolder(GdcEntity):
     """Folder Construct"""
-    def __init__(self, gFile, local_path):
-        super().__init__(gFile, local_path)
+
+    MimeType = 'application/vnd.google-apps.folder'
+    
+    def __init__(self, app, gFile, local_path):
+        super().__init__(app, gFile, local_path)
         print("FOLDER: %s # %s" % (local_path, gFile['title']))
 
-    def pull(self, app):
+    def pull(self):
         print("Folder:PULL")
 
         #
@@ -83,14 +88,14 @@ class GdcFolder(GdcEntity):
         #
 
         # common configs
-        super().pull(app)
+        super().pull()
 
         # read an parse local directory config, if any
         cfg = self.load_local_config()
         
         # collect info of all drive sub-entities...
         query = { 'q': "'%s' in parents and trashed=false" % self.gFile['id'] }
-        entity_list = app.drive.ListFile(query).GetList()
+        entity_list = self.app.drive.ListFile(query).GetList()
 
         work_list = []
         folder_list = []
@@ -140,10 +145,10 @@ class GdcFolder(GdcEntity):
 
             # cook it up
             itemPath = os.path.join(self.localPath, item['title'])
-            action = action_builder(item, itemPath)
+            action = action_builder(self.app, item, itemPath)
             
             # process it, and begin the recursion
-            action.pull(self)
+            action.pull()
 
 
         # recurse
@@ -161,34 +166,26 @@ class GdcFolder(GdcEntity):
             os.mkdir(dir_name)
 
             # dig?
-            if app._flags.no_recurse:
+            if self.app._flags.no_recurse:
                 return
-
-            # recurse..
-            #os.chdir(dir_name)
-
-
             
             # identify
             action_builder = find_action(item)
 
             # cook it up
-            itemPath = os.path.join(self.localPath, item['title'])
-            action = action_builder(item, itemPath)
+            itemPath = os.path.join(self.app, self.localPath, item['title'])
+            action = action_builder(self.app, item, itemPath)
             
             # process it, and begin the recursion
-            action.pull(app)
-
-            # recurse..
-            #os.chdir('..')
+            action.pull()
 
 
 class GdcSimple(GdcEntity):
     """Basic File"""
-    def __init__(self, gFile, localPath):
-        super().__init__(gFile, localPath)
+    def __init__(self, app, gFile, localPath):
+        super().__init__(app, gFile, localPath)
 
-    def pull(self, app):
+    def pull(self):
         print("Simple:PULL")
 
         # pre-check
@@ -199,7 +196,7 @@ class GdcSimple(GdcEntity):
         self.gFile.GetContentFile(self.localPath)
 
         # update the file attribs
-        super().pull(app)
+        super().pull()
 
     def push(self):
         pass
@@ -208,25 +205,164 @@ class GdcSimple(GdcEntity):
         pass
 
 
+_desktop_file_format = \
+"""#!/usr/bin/env xdg-open
+
+[Desktop Entry]
+Version=1.0
+Encoding=UTF-8
+Name={0[title]}
+Type=Link
+URL={1}
+Icon={2}
+MimeType={0[mimeType]}
+"""
+
+class BaseExporter(object):
+    def __init__(self, action):
+        self.action = action
+        
+    def extension(self):
+        raise NotImplementedError("Exporter not implemented")
+
+    def export(self):
+        raise NotImplementedError("Exporter not implemented")
+
+    def icon_filepath(self, tag):
+        return os.path.join(
+            gDriveApp.icon_base(),
+            'google-logos', '128px',
+            'logo_{}_128px.png'.format(tag)
+            )
+
+
+class GoogleExporter(BaseExporter):
+    """Export some sort of Google Apps item"""
+
+    def extension(self):
+        return gDriveApp.mime_to_file_extension(self.action.exportMimeType())
+
+    def export(self):
+        action = self.action
+        action.gFile.GetContentFile(action.localPath, action.exportMimeType())
+
+
+class WindowsDesktopExporter(BaseExporter):
+
+    def extension(self):
+        if isinstance(self.action, GdcGoogleDoc):
+            return '.gdoc'
+        if isinstance(self.action, GdcGoogleSheet):
+            return '.gsheet'
+        return ''
+
+    def export(self):
+        action = self.action
+        action.gFile.GetContentFile(action.localPath)
+
+class LinuxDesktopExporter(BaseExporter):
+    """Create a .desktop file for Ubuntu ..."""
+
+    def extension(self):
+        return '.desktop'
+
+    def export(self):
+        action = self.action
+            
+        # define the content first in case of issues
+        content = _desktop_file_format.format(
+            action.gFile,
+            action.gFile['embedLink'].replace('/htmlembed', ''),
+            self.icon_filepath(action.tag)
+            )
+
+        # create the file -- probably should lock it...
+        f = open(action.localPath, "w+")
+
+        # splat the content
+        f.write(content)
+
+         # make them read-only so the contents are not edited
+        os.fchmod(f.fileno(), 0o444)
+
+        # done
+        f.close()
+
+
+# define a helpful default position
+DefaultExporter = LinuxDesktopExporter
+import platform
+if platform.system == 'Windows':
+    DefaultExporter = WindowsDesktopExporter
+        
+
 class GdcGoogleApp(GdcEntity):
     """GoogleApp Construct"""
-    def __init__(self, gFile, localPath):
-        super().__init__(gFile, localPath)
+    tag = 'drive'
+    mimeType = None
+    
+    def __init__(self, app, gFile, localPath):
+        super().__init__(app, gFile, localPath)
+        self._exportMimeType = None
 
-    def pull(self, app):
+        # figure out an exporter
+        if self.exportMimeType() is None:
+            self.exporter = DefaultExporter(self)
+        else:
+            self.exporter = GoogleExporter(self)
+
+        # update the filename
+        self.localPath = self.localPath + self.exporter.extension()
+
+
+    def _available_export_formats(self):
+        about = self.app.about()
+        for expFmt in about['exportFormats']:
+            if expFmt['source'] == self.mimeType:
+                return expFmt['targets']
+
+        return []
+
+    def exportMimeType(self):
+        if self._exportMimeType:
+            return self._exportMimeType            
+
+        # any mappings at all?
+        cfg = self.app.config()
+        if 'export-formats' not in cfg:
+            self._exportMimeType = None
+            return None
+
+        # do we have a definition in the config at for this kind?
+        try:
+            emt = cfg['export-formats'][self.gFile['mimeType']]
+        except KeyError:
+            self._exportMimeType = None
+            return None
+
+        # is it a *valid* kind
+        aef = self._available_export_formats(self)
+        for f in aef:
+            if ef == emt:
+                self._exportMimeType = ef
+                return ef
+
+        # nope, default then...
+        self._exportMimeType = None
+        return None
+
+    def pull(self):
         print("GoogleApp:PULL")
         
         # pre-check
         if os.path.exists(self.localPath) or os.path.isfile(self.localPath):
             raise NotCleanSlateError(self.localPath)
 
-        print("    Skipping " + self.localPath)
-
-        # download the contents
-        #self.gFile.GetContentFile(self.localPath)
+        # export/download the contents
+        self.exporter.export()
 
         # update the file attribs
-        #super.pull(app)
+        super().pull()
 
     def push(self):
         pass
@@ -234,14 +370,55 @@ class GdcGoogleApp(GdcEntity):
     def sync(self):
         pass
 
+class GdcGoogleDoc(GdcGoogleApp):
+
+    tag = 'docs'
+    MimeType = 'application/vnd.google-apps.document'
+
+
+class GdcGoogleSheet(GdcGoogleApp):
+
+    tag = 'sheets'
+    MimeType = 'application/vnd.google-apps.spreadsheet'
+
+class GdcGoogleMap(GdcGoogleApp):
+
+    tag = 'maps'
+    MimeType = 'application/vnd.google-apps.map'
+
+class GdcGoogleForm(GdcGoogleApp):
+
+    tag = 'forms'
+    MimeType = 'application/vnd.google-apps.form'
+
+class GdcGoogleDrawing(GdcGoogleApp):
+
+    tag = 'draw'
+    MimeType = 'application/vnd.google-apps.drawing'
+
+class GdcGoogleScript(GdcGoogleApp):
+
+    tag = 'script'
+    MimeType = 'application/vnd.google-apps.script'
+
+class GdcGooglePresentation(GdcGoogleApp):
+
+    tag = 'slides'
+    MimeType = 'application/vnd.google-apps.presentation'
+
 
 #
 # Identify what to do based on the known type...
 #
 mime_map = {
-    'application/vnd.google-apps.folder': GdcFolder,
-    'application/vnd.google-apps.document': GdcGoogleApp,
-    'application/vnd.google-apps.spreadsheet': GdcGoogleApp,
+    GdcFolder.MimeType: GdcFolder,
+    GdcGoogleDoc.MimeType: GdcGoogleDoc,
+    GdcGoogleSheet.MimeType: GdcGoogleSheet,
+    GdcGoogleMap.MimeType: GdcGoogleMap,
+    GdcGoogleForm.MimeType: GdcGoogleForm,
+    GdcGoogleDrawing.MimeType: GdcGoogleDrawing,
+    GdcGoogleScript.MimeType: GdcGoogleScript,
+    GdcGooglePresentation.MimeType: GdcGooglePresentation,
     'application/pdf': GdcSimple,
     }
 

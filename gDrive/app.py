@@ -40,6 +40,27 @@ class gDriveApp(object):
         self._root = None
         self._about = None
 
+    #
+    #  MIME Support
+    #
+    mimeType_map = None
+    @staticmethod
+    def mime_to_file_extension(mimeType):
+        if gDriveApp.mimeType_map is None:
+            fname = os.path.join(
+                gDriveApp.install_base(),
+                gDriveApp.GDC_APP_INFO_DIR,
+                'mime.types')
+            f = open(fname)
+            gDriveApp.mimeType_map = {}
+            for l in f.readlines():
+                if l.startswith('#'):
+                    next
+                mime,ext = l.strip().split()
+                gDriveApp.mimeType_map[mime] = ext
+
+        return gDriveApp.mimeType_map[mimeType]
+
     def root_dir(self):
         if self._root_dir:
             return self._root_dir
@@ -96,6 +117,18 @@ class gDriveApp(object):
             gDriveApp.GDC_FOLDER,
             gDriveApp.GDC_CREDENTIALS_FILE)
 
+    def platform_config(self):
+        """Get a set of platform specific defaults"""
+        if not self._plat_config:           
+            pcf = os.path.join(self.install_base(),
+                               'app-info',
+                               'platform-config')
+            fp = open(pcf)
+            self._plat_config = json.load(fp)
+            fp.close()
+
+        return self._plat_config
+    
     def config(self):
         if not self._config:
             fp = open(self.get_config_filepath())
@@ -121,6 +154,10 @@ class gDriveApp(object):
     def install_base():
         return gDrive.__file__.rsplit(os.path.sep, 1)[0]
 
+    @staticmethod
+    def icon_base():
+        return os.path.join(gDriveApp.install_base(), 'icons')
+    
     def client_secret_filepath(self):
         return os.path.join(
             gDriveApp.install_base(),
