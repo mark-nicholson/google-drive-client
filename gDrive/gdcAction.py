@@ -240,7 +240,8 @@ class GoogleExporter(BaseExporter):
     """Export some sort of Google Apps item"""
 
     def extension(self):
-        return gDriveApp.mime_to_file_extension(self.action.exportMimeType())
+        tag = gDriveApp.mime_to_file_extension(self.action.exportMimeType())
+        return '.' + tag
 
     def export(self):
         action = self.action
@@ -299,7 +300,7 @@ if platform.system == 'Windows':
 class GdcGoogleApp(GdcEntity):
     """GoogleApp Construct"""
     tag = 'drive'
-    mimeType = None
+    MimeType = None
     
     def __init__(self, app, gFile, localPath):
         super().__init__(app, gFile, localPath)
@@ -318,7 +319,7 @@ class GdcGoogleApp(GdcEntity):
     def _available_export_formats(self):
         about = self.app.about()
         for expFmt in about['exportFormats']:
-            if expFmt['source'] == self.mimeType:
+            if expFmt['source'] == self.MimeType:
                 return expFmt['targets']
 
         return []
@@ -341,8 +342,8 @@ class GdcGoogleApp(GdcEntity):
             return None
 
         # is it a *valid* kind
-        aef = self._available_export_formats(self)
-        for f in aef:
+        aef = self._available_export_formats()
+        for ef in aef:
             if ef == emt:
                 self._exportMimeType = ef
                 return ef

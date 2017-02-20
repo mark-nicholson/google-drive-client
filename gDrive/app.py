@@ -54,10 +54,10 @@ class gDriveApp(object):
             f = open(fname)
             gDriveApp.mimeType_map = {}
             for l in f.readlines():
-                if l.startswith('#'):
-                    next
-                mime,ext = l.strip().split()
-                gDriveApp.mimeType_map[mime] = ext
+                if not l.startswith('#'):
+                    items = l.rstrip().split()
+                    gDriveApp.mimeType_map[items[0]] = items[1]
+            f.close()
 
         return gDriveApp.mimeType_map[mimeType]
 
