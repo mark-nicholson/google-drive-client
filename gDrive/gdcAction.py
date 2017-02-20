@@ -12,7 +12,7 @@ from contextlib import ContextDecorator
 from gDrive.app import gDriveApp
 from gDrive.gdcExceptions import *
 from gDrive import gMetadata as gmd
-
+from gDrive.porters import *
 
 class FolderContext(ContextDecorator):
     def __init__(self, folder, basepath=None):
@@ -205,97 +205,6 @@ class GdcSimple(GdcEntity):
         pass
 
 
-_desktop_file_format = \
-"""#!/usr/bin/env xdg-open
-
-[Desktop Entry]
-Version=1.0
-Encoding=UTF-8
-Name={0[title]}
-Type=Link
-URL={1}
-Icon={2}
-MimeType={0[mimeType]}
-"""
-
-class BaseExporter(object):
-    def __init__(self, action):
-        self.action = action
-        
-    def extension(self):
-        raise NotImplementedError("Exporter not implemented")
-
-    def export(self):
-        raise NotImplementedError("Exporter not implemented")
-
-    def icon_filepath(self, tag):
-        return os.path.join(
-            gDriveApp.icon_base(),
-            'google-logos', '128px',
-            'logo_{}_128px.png'.format(tag)
-            )
-
-
-class GoogleExporter(BaseExporter):
-    """Export some sort of Google Apps item"""
-
-    def extension(self):
-        tag = gDriveApp.mime_to_file_extension(self.action.exportMimeType())
-        return '.' + tag
-
-    def export(self):
-        action = self.action
-        action.gFile.GetContentFile(action.localPath, action.exportMimeType())
-
-
-class WindowsDesktopExporter(BaseExporter):
-
-    def extension(self):
-        if isinstance(self.action, GdcGoogleDoc):
-            return '.gdoc'
-        if isinstance(self.action, GdcGoogleSheet):
-            return '.gsheet'
-        return ''
-
-    def export(self):
-        action = self.action
-        action.gFile.GetContentFile(action.localPath)
-
-class LinuxDesktopExporter(BaseExporter):
-    """Create a .desktop file for Ubuntu ..."""
-
-    def extension(self):
-        return '.desktop'
-
-    def export(self):
-        action = self.action
-            
-        # define the content first in case of issues
-        content = _desktop_file_format.format(
-            action.gFile,
-            action.gFile['embedLink'].replace('/htmlembed', ''),
-            self.icon_filepath(action.tag)
-            )
-
-        # create the file -- probably should lock it...
-        f = open(action.localPath, "w+")
-
-        # splat the content
-        f.write(content)
-
-         # make them read-only so the contents are not edited
-        os.fchmod(f.fileno(), 0o444)
-
-        # done
-        f.close()
-
-
-# define a helpful default position
-DefaultExporter = LinuxDesktopExporter
-import platform
-if platform.system == 'Windows':
-    DefaultExporter = WindowsDesktopExporter
-        
 
 class GdcGoogleApp(GdcEntity):
     """GoogleApp Construct"""
@@ -306,14 +215,14 @@ class GdcGoogleApp(GdcEntity):
         super().__init__(app, gFile, localPath)
         self._exportMimeType = None
 
-        # figure out an exporter
+        # figure out an porter
         if self.exportMimeType() is None:
-            self.exporter = DefaultExporter(self)
+            self.porter = DefaultPorter(self)
         else:
-            self.exporter = GoogleExporter(self)
+            self.porter = GooglePorter(self)
 
         # update the filename
-        self.localPath = self.localPath + self.exporter.extension()
+        self.localPath = self.localPath + self.porter.extension()
 
 
     def _available_export_formats(self):
@@ -360,7 +269,7 @@ class GdcGoogleApp(GdcEntity):
             raise NotCleanSlateError(self.localPath)
 
         # export/download the contents
-        self.exporter.export()
+        self.porter.export()
 
         # update the file attribs
         super().pull()
